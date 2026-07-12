@@ -1,0 +1,17 @@
+[Unit]
+Description=Bitcoin Heatmap Telegram liquidation collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bitcoinheatmap
+WorkingDirectory=/opt/bitcoin-heatmap
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm run collector:live
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
