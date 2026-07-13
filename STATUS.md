@@ -23,6 +23,17 @@ npm run collector:live
 - Telegram session at `data/telegram.session`.
 - Both local data files are ignored by Git.
 
+## Updated product direction
+
+The current leverage estimator is not treated as a factual map of trader positions. The primary product direction is now:
+
+- Observed Binance and Bybit liquidation events as the main heatmap layer.
+- Open interest, funding, price, and long/short ratios as separate measured context.
+- The leverage model retained only as an explicitly labeled scenario view.
+- A later statistically calibrated model, trained against the collected event history and required to show coverage and uncertainty.
+
+The three investigated paths and their cost and implementation tradeoffs are documented in [RESEARCH.md](RESEARCH.md). The recommended order is free observed data first, calibrated inference second, and CoinGlass only as an optional paid comparison.
+
 ## Collected data
 
 The 100,000-message backfill produced:
@@ -48,7 +59,10 @@ Do not create a paid shape just to bypass the capacity error. Verify the final O
 6. Transfer `.env.local` and `data/telegram.session` securely. Never commit either file.
 7. Install `deploy/liquidation-collector.service.example` as a systemd service.
 8. Verify logs with `journalctl` and add a database backup routine.
-9. Connect the dashboard to the exchange-separated SQLite data.
+9. Connect the dashboard to the exchange-separated SQLite data as the observed primary layer.
+10. Replace synthetic heatmap intensity with observed price/time bins.
+11. Move the leverage estimator behind an explicit scenario control.
+12. Build and validate the statistical hazard model described in [RESEARCH.md](RESEARCH.md).
 
 ## Validation
 

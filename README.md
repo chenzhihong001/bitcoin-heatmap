@@ -47,8 +47,9 @@ These are observed Telegram feed events, not a complete record of every exchange
 - Oracle Cloud VM creation is paused because `VM.Standard.A1.Flex` capacity was unavailable in the selected availability domain.
 - The dashboard does not yet read the historical SQLite database.
 - Historical replay, source filters, coverage indicators, and cross-exchange aggregation are not implemented.
-- The heatmap is a client-side estimator. It uses current mark price, open interest, fixed leverage buckets, and maintenance-margin assumptions.
+- The current leverage heatmap is a client-side scenario estimator. It uses current mark price, aggregate open interest, fixed leverage buckets, and maintenance-margin assumptions; it does not observe trader leverage or position entry prices.
 - Binance does not expose each trader's leverage or liquidation price, so modeled levels are not guaranteed liquidation prices.
+- The recommended product direction is to make observed liquidation events the primary heatmap, keep the estimator as an optional scenario view, and later add a statistically calibrated model with uncertainty. See [RESEARCH.md](RESEARCH.md).
 - `1M`, `3M`, `6M`, and `1Y` remain unavailable in the dashboard until real historical rendering is connected.
 
 ## Development
@@ -114,6 +115,8 @@ Approximate levels are calculated as:
 
 Heatmap intensity is concentrated around those levels and scaled by current open-interest notional. These assumptions must be versioned and validated before the output is used for serious market analysis.
 
+The leverage buckets are not measured Binance statistics. They are placeholders for the current scenario model and must not be read as the actual percentage of users or open interest at each leverage. The planned replacement and the comparison with free exchange data and paid providers are documented in [RESEARCH.md](RESEARCH.md).
+
 ## Important Files
 
 - `src/app/page.tsx` - Current client dashboard, Binance connections, estimator, and UI state.
@@ -126,6 +129,7 @@ Heatmap intensity is concentrated around those levels and scaled by current open
 - `scripts/collector/parser.ts` - Telegram message parser.
 - `scripts/collector/database.ts` - SQLite schema and migrations.
 - `deploy/` - Linux systemd deployment template and notes.
+- `RESEARCH.md` - Data-source comparison, model design, costs, and implementation plan.
 
 ## Next Steps
 
