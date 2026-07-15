@@ -16,38 +16,36 @@ const timeframeSettings: Record<Timeframe, { columns: number; stepMinutes: numbe
   "6M": { columns: 26, stepMinutes: 10080, priceStep: 1500 },
   "1Y": { columns: 26, stepMinutes: 20160, priceStep: 2200 },
 };
-const leverageBuckets = [
-  { leverage: 10, share: 0.28, maintenance: 0.004 },
-  { leverage: 25, share: 0.32, maintenance: 0.005 },
-  { leverage: 50, share: 0.24, maintenance: 0.006 },
-  { leverage: 100, share: 0.16, maintenance: 0.01 },
-];
 type LiquidationEvent = { side: string; price: number; notional: number; time: string };
-
-function buildHeatmap(markPrice: number, openInterestContracts: number | null, columnCount: number, priceStep: number, zoomLevel: number) {
-  const notional = (openInterestContracts ?? 100_000) * markPrice;
-  const levels = leverageBuckets.flatMap(({ leverage, share, maintenance }) => [
-    { price: markPrice * (1 - 1 / leverage + maintenance), weight: share, side: "long" },
-    { price: markPrice * (1 + 1 / leverage - maintenance), weight: share, side: "short" },
-  ]);
-  const visiblePriceStep = priceStep * zoomLevel;
-  const priceLevels = Array.from({ length: 12 }, (_, row) => Math.round(markPrice + (5.5 - row) * visiblePriceStep));
-  return priceLevels.map((price, row) => Array.from({ length: columnCount }, (_, column) => {
-    const timeWeight = 0.52 + column / (columnCount * 2.2);
-    const concentration = levels.reduce((total, level) => {
-      const distance = Math.abs(price - level.price) / markPrice;
-      return total + level.weight * Math.exp(-distance * distance / 0.00018);
-    }, 0);
-    const notionalWeight = Math.min(1, concentration * (notional / 6_000_000_000));
-    const visiblePulse = ((row * 7 + column * 11) % 17) / 180;
-    return Math.min(0.98, notionalWeight * timeWeight + visiblePulse);
-  }));
-}
+type ObservedEvent = { exchange: string; side: string; eventTime: number; price: number; notionalUsd: number | null; amountUnit: string };
+type ObservedResponse = {
+  events: ObservedEvent[];
+  coverage: { eventCount: number; notionalUsd: number | null; nonUsdCount: number; oldestEventTime: number | null; newestEventTime: number | null } | null;
+  truncated: boolean;
+};
 
 function heatColor(intensity: number) {
   if (intensity > 0.72) return `rgba(239, 111, 80, ${0.36 + intensity * 0.58})`;
   if (intensity > 0.42) return `rgba(237, 177, 70, ${0.18 + intensity * 0.54})`;
   return `rgba(55, 121, 125, ${0.08 + intensity * 0.58})`;
+}
+
+function buildObservedHeatmap(events: ObservedEvent[], prices: number[], columnCount: number, durationMinutes: number) {
+  const grid = prices.map(() => Array.from({ length: columnCount }, () => 0));
+  const latestEventTime = events.reduce((latest, event) => Math.max(latest, event.eventTime), 0);
+  const earliestEventTime = latestEventTime - durationMinutes * 60_000;
+  const priceStep = prices.length > 1 ? Math.abs(prices[1] - prices[0]) : 1;
+
+  for (const event of events) {
+    if (event.notionalUsd === null || event.eventTime < earliestEventTime) continue;
+    const row = Math.round((prices[0] - event.price) / priceStep);
+    const column = Math.floor(((event.eventTime - earliestEventTime) / (durationMinutes * 60_000)) * columnCount);
+    if (row < 0 || row >= prices.length || column < 0 || column >= columnCount) continue;
+    grid[row][column] += event.notionalUsd;
+  }
+
+  const maximum = Math.max(...grid.flat(), 0);
+  return grid.map((line) => line.map((notional) => maximum === 0 ? 0 : Math.min(0.98, Math.log1p(notional) / Math.log1p(maximum))));
 }
 
 export default function Home() {
@@ -64,8 +62,9 @@ export default function Home() {
   const [observedLiquidations, setObservedLiquidations] = useState(0);
   const [lastLiquidation, setLastLiquidation] = useState("--:--:--");
   const [recentEvents, setRecentEvents] = useState<LiquidationEvent[]>([]);
+  const [observedData, setObservedData] = useState<ObservedResponse>({ events: [], coverage: null, truncated: false });
   const timeframeSetting = timeframeSettings[timeframe];
-  const historicalUnavailable = ["1M", "3M", "6M", "1Y"].includes(timeframe);
+  const historicalUnavailable = false;
   const timeLabels = useMemo(() => Array.from({ length: timeframeSetting.columns }, (_, index) => {
     const minutes = index * timeframeSetting.stepMinutes;
     if (minutes >= 1440) return `D${Math.floor(minutes / 1440) + 1}`;
@@ -74,10 +73,21 @@ export default function Home() {
     return `${hours}:${remainder}`;
   }), [timeframeSetting]);
   const prices = useMemo(() => Array.from({ length: 12 }, (_, row) => Math.round(markPrice + (5.5 - row) * timeframeSetting.priceStep * zoomLevel)), [markPrice, timeframeSetting, zoomLevel]);
-  const heatmap = useMemo(() => buildHeatmap(markPrice, openInterestContracts, timeframeSetting.columns, timeframeSetting.priceStep, zoomLevel), [markPrice, openInterestContracts, timeframeSetting, zoomLevel]);
+  const heatmap = useMemo(() => buildObservedHeatmap(observedData.events, prices, timeframeSetting.columns, timeframeSetting.stepMinutes * timeframeSetting.columns), [observedData.events, prices, timeframeSetting]);
   const selectedColumn = Math.min(selected.column, timeframeSetting.columns - 1);
   const selectedIntensity = heatmap[selected.row][selectedColumn];
-  const selectedNotional = useMemo(() => `$${(selectedIntensity * 48 + 8.4).toFixed(1)}M`, [selectedIntensity]);
+  const selectedNotional = selectedIntensity > 0 ? "OBSERVED" : "NO EVENT";
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadObservedData = () => fetch(`/api/liquidations?timeframe=${timeframe}&symbol=BTC`)
+      .then((response) => response.json() as Promise<ObservedResponse>)
+      .then((data) => { if (!cancelled) setObservedData(data); })
+      .catch(() => { if (!cancelled) setFeedStatus("DEGRADED"); });
+    loadObservedData();
+    const refresh = window.setInterval(loadObservedData, 30_000);
+    return () => { cancelled = true; window.clearInterval(refresh); };
+  }, [timeframe]);
 
   useEffect(() => {
     if (!isLive) {
@@ -160,7 +170,7 @@ export default function Home() {
   return (
     <main className="dashboard-shell">
       <nav className="topbar"><div className="brand-lockup"><span className="brand-mark">L</span><span>LIQUID / MAP</span><span className="brand-version">BETA</span></div><div className="topbar-meta"><span className="status-dot" /> Binance Futures <span className="muted">|</span> BTCUSDT Perpetual</div><button className={`live-button ${isLive ? "is-live" : ""}`} onClick={() => setIsLive(!isLive)}><span className="live-pulse" /> {isLive ? "LIVE" : "PAUSED"}</button></nav>
-      <section className="page-heading"><div><p className="eyebrow">MARKET STRUCTURE / REAL-TIME</p><h1>Liquidation <em>heatmap</em></h1><p className="heading-copy">Estimated forced-flow concentrations for BTC perpetual futures.</p></div><div className="heading-stats"><div><span className="stat-label">MARK PRICE</span><strong>{formattedPrice}</strong><span className={priceChange >= 0 ? "positive" : "negative"}>{priceChange >= 0 ? "+" : ""}{priceChange.toFixed(2)}%</span></div><div><span className="stat-label">UPDATED</span><strong>{lastUpdate}</strong><span className="muted">UTC</span></div></div></section>
+      <section className="page-heading"><div><p className="eyebrow">MARKET STRUCTURE / OBSERVED</p><h1>Liquidation <em>heatmap</em></h1><p className="heading-copy">Observed public liquidation activity for BTC perpetual futures.</p></div><div className="heading-stats"><div><span className="stat-label">MARK PRICE</span><strong>{formattedPrice}</strong><span className={priceChange >= 0 ? "positive" : "negative"}>{priceChange >= 0 ? "+" : ""}{priceChange.toFixed(2)}%</span></div><div><span className="stat-label">UPDATED</span><strong>{lastUpdate}</strong><span className="muted">UTC</span></div></div></section>
       <section className="control-strip"><div className="segmented-control">{timeframeOptions.map((option) => <button key={option} className={timeframe === option ? "active" : ""} onClick={() => setTimeframe(option)}>{option}</button>)}</div><span className="control-divider" /><button className="filter-button active-filter">BOTH <span>LONG / SHORT</span></button><button className="filter-button">ALL NOTIONAL <span>USD</span></button><div className="controls-spacer" /><div className="zoom-controls"><button aria-label="Zoom out price range" onClick={() => setZoomLevel((level) => Math.min(5, level + 1))}>-</button><span>{zoomLevel === 1 ? "1x" : `${zoomLevel}x RANGE`}</span><button aria-label="Zoom in price range" onClick={() => setZoomLevel((level) => Math.max(1, level - 1))}>+</button></div><span className="model-note">MODEL 0.3.1 <span className="info-icon">i</span></span></section>
       <section className="workspace-grid"><div className="chart-panel"><div className="panel-header"><div><span className="panel-kicker">BTCUSDT / {timeframe}</span><span className="panel-title">Estimated liquidation concentration</span></div><div className="legend"><span><i className="legend-low" /> LOW</span><span><i className="legend-mid" /> ELEVATED</span><span><i className="legend-high" /> HIGH</span></div></div><div className="heatmap-wrap"><div className="price-axis">{prices.map((price) => <span key={price}>${(price / 1000).toFixed(1)}k</span>)}</div><div className="heatmap-area" onWheel={(event) => setZoomLevel((level) => Math.max(1, Math.min(5, level + (event.deltaY > 0 ? 1 : -1))))}><div className="grid-lines">{prices.map((price) => <span key={price} />)}</div>{historicalUnavailable ? <div className="data-unavailable"><strong>HISTORICAL HEATMAP UNAVAILABLE</strong><span>Binance public liquidation events are live-only. This range needs stored history or a licensed historical provider.</span><small>SELECT 15M - 1W FOR LIVE MODELED DATA</small></div> : <><div className="heatmap-grid" style={{ gridTemplateColumns: `repeat(${timeframeSetting.columns}, minmax(1.2rem, 1fr))`, width: timeframeSetting.columns > 20 ? `${timeframeSetting.columns * 2.1}rem` : "100%" }}>{heatmap.map((line, row) => line.map((intensity, column) => <button aria-label={`Estimated liquidation at $${prices[row].toLocaleString()}`} key={`${row}-${column}`} className={`heat-cell ${selected.row === row && selected.column === column ? "selected" : ""}`} style={{ backgroundColor: heatColor(intensity) }} onClick={() => setSelected({ row, column })} />))}</div><div className="current-price-line" style={{ top: currentPricePosition }}><span>{formattedPrice}</span></div><div className="cluster-label cluster-top">SHORTS AT RISK <strong>MODELED</strong></div><div className="cluster-label cluster-bottom">LONGS AT RISK <strong>MODELED</strong></div></>}<div className="time-axis">{timeLabels.filter((_, index) => index % Math.max(1, Math.floor(timeLabels.length / 6)) === 0).map((time) => <span key={time}>{time}</span>)}</div></div></div><div className="chart-footer"><span>PRICE LEVELS / USD</span><span>{historicalUnavailable ? "NO RELIABLE HISTORICAL SOURCE" : `${timeframe} live modeled viewport`}</span><span>SCROLL TO ZOOM</span></div></div><aside className="inspector-panel"><div className="panel-header"><span className="panel-kicker">INSPECTOR</span><span className="live-label">● {displayedFeedStatus}</span></div><div className="inspector-price"><span>SELECTED LEVEL</span><strong>${prices[selected.row].toLocaleString()}.00</strong><span className={selectedSide === "SHORT" ? "positive" : "negative"}>{selectedSide} LIQUIDATIONS</span></div><div className="inspector-block"><span className="stat-label">ESTIMATED NOTIONAL</span><strong className="big-number">{historicalUnavailable ? "N/A" : selectedNotional}</strong><div className="meter"><span style={{ width: historicalUnavailable ? "0%" : `${Math.max(18, selectedIntensity * 100)}%` }} /></div><div className="meter-labels"><span>LOW</span><span>HIGH</span></div></div><div className="detail-list"><div><span>LEVERAGE BAND</span><strong>{historicalUnavailable ? "HISTORICAL N/A" : "ASSUMPTION / 10x - 100x"}</strong></div><div><span>OPEN INTEREST</span><strong>{formattedOpenInterest}</strong></div><div><span>FUNDING / 8H</span><strong className={fundingRate !== null && fundingRate < 0 ? "negative" : "positive"}>{formattedFundingRate}</strong></div><div><span>LAST OBSERVED EVENT</span><strong>{lastLiquidation}</strong></div></div><div className="observed-events"><div className="events-heading"><span className="stat-label">CONFIRMED FORCE ORDERS</span><span>BINANCE STREAM</span></div>{recentEvents.length === 0 ? <p className="empty-events">Waiting for a public liquidation event.</p> : recentEvents.map((event, index) => <div className="event-row" key={`${event.time}-${index}`}><span>{event.time}</span><strong>${event.price.toLocaleString(undefined, { maximumFractionDigits: 1 })}</strong><span>${(event.notional / 1_000_000).toFixed(2)}M</span></div>)}</div><div className="inspector-callout"><span className="callout-icon">!</span><p>Modeled levels are estimates based on open interest, leverage buckets, and maintenance-margin assumptions. They are not guaranteed liquidation prices.</p></div></aside></section>
       <section className="bottom-grid"><div className="metric-card"><span className="stat-label">OPEN INTEREST</span><strong>{formattedOpenInterest}</strong><span className="muted">BINANCE REST SNAPSHOT</span></div><div className="metric-card"><span className="stat-label">FUNDING RATE</span><strong className={fundingRate !== null && fundingRate < 0 ? "negative" : "positive"}>{formattedFundingRate}</strong><span className="muted">CURRENT 8H RATE</span></div><div className="metric-card"><span className="stat-label">OBSERVED LIQUIDATIONS</span><strong>{formattedLiquidations}</strong><span className="muted">SINCE PAGE LOAD / {lastLiquidation}</span></div><div className="metric-card feed-card"><span className="stat-label">FEED HEALTH</span><strong><span className="status-dot" /> {displayedFeedStatus}</strong><span className="muted">BINANCE LIVE STREAMS</span></div></section>

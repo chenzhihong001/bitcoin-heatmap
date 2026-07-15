@@ -31,6 +31,8 @@ The current leverage estimator is not treated as a factual map of trader positio
 - Open interest, funding, price, and long/short ratios as separate measured context.
 - The leverage model retained only as an explicitly labeled scenario view.
 - A later statistically calibrated model, trained against the collected event history and required to show coverage and uncertainty.
+- Local SQLite API route at `/api/liquidations` serving observed events, coverage, and USD-notional metadata.
+- Dashboard heatmap now bins observed USD-denominated events by price and time; contract-only records are not converted into fabricated USD values.
 
 The three investigated paths and their cost and implementation tradeoffs are documented in [RESEARCH.md](RESEARCH.md). The recommended order is free observed data first, calibrated inference second, and CoinGlass only as an optional paid comparison.
 
@@ -59,9 +61,9 @@ Do not create a paid shape just to bypass the capacity error. Verify the final O
 6. Transfer `.env.local` and `data/telegram.session` securely. Never commit either file.
 7. Install `deploy/liquidation-collector.service.example` as a systemd service.
 8. Verify logs with `journalctl` and add a database backup routine.
-9. Connect the dashboard to the exchange-separated SQLite data as the observed primary layer.
-10. Replace synthetic heatmap intensity with observed price/time bins.
-11. Move the leverage estimator behind an explicit scenario control.
+9. Deploy the collector when a free always-on server is available.
+10. Improve visible coverage labels and source filters in the dashboard.
+11. Add an explicit scenario control if the leverage estimator is brought back.
 12. Build and validate the statistical hazard model described in [RESEARCH.md](RESEARCH.md).
 
 ## Validation

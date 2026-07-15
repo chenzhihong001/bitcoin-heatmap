@@ -45,7 +45,7 @@ These are observed Telegram feed events, not a complete record of every exchange
 
 - The continuous collector has been tested locally but is not running on a server yet.
 - Oracle Cloud VM creation is paused because `VM.Standard.A1.Flex` capacity was unavailable in the selected availability domain.
-- The dashboard does not yet read the historical SQLite database.
+- The dashboard now reads observed data locally through `/api/liquidations` and bins USD-denominated events by price and time.
 - Historical replay, source filters, coverage indicators, and cross-exchange aggregation are not implemented.
 - The current leverage heatmap is a client-side scenario estimator. It uses current mark price, aggregate open interest, fixed leverage buckets, and maintenance-margin assumptions; it does not observe trader leverage or position entry prices.
 - Binance does not expose each trader's leverage or liquidation price, so modeled levels are not guaranteed liquidation prices.
@@ -120,6 +120,7 @@ The leverage buckets are not measured Binance statistics. They are placeholders 
 ## Important Files
 
 - `src/app/page.tsx` - Current client dashboard, Binance connections, estimator, and UI state.
+- `src/app/api/liquidations/route.ts` - Dynamic SQLite-backed observed liquidation API.
 - `src/app/globals.css` - Dashboard visual system and responsive layout.
 - `src/app/layout.tsx` - Root metadata and font setup.
 - `AGENTS.md` - Repository-specific Next.js guidance.
